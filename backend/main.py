@@ -12,10 +12,24 @@ from datetime import datetime, timedelta, timezone
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from dotenv import load_dotenv
 import os
+from fastapi.middleware.cors import CORSMiddleware
+
+from google.oauth2 import id_token
+from google.auth.transport import requests
 
 load_dotenv()
 
 app = FastAPI()
+
+origins = ["http://localhost:5173"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_headers=["*"],
+    allow_methods=["*"],
+)
 
 Base.metadata.create_all(bind=engine)
 
@@ -39,7 +53,10 @@ BcryptContext = CryptContext(schemes = ["bcrypt"], deprecated="auto")
 class UserModel(BaseModel):
     full_name : str
     email : EmailStr
-    password: str
+    password: str = Field(min_length=8)
+
+class GoogleTokenRequest(BaseModel):
+    credential: str
 
 def create_access_token(email):
     
@@ -144,6 +161,80 @@ def create_new_access_token(db: db_dependency, refresh_token: str | None = Cooki
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
 
+
+@app.post("/auth/google")
+def google_login(
+    response: Response,
+    db: db_dependency,
+    data: GoogleTokenRequest
+):
+    try:
+        idinfo = id_token.verify_oauth2_token(
+            data.credential,
+            requests.Request(),
+            os.getenv("GOOGLE_CLIENT_ID")
+        )
+
+        google_id = idinfo["sub"]
+        email = idinfo["email"]
+        full_name = idinfo.get("name", "Google User")
+        email_verified = idinfo.get("email_verified", False)
+
+        if not email_verified:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Google email is not verified"
+            )
+
+        # 1. Look for an existing Google account
+        user = db.query(User).filter(User.google_id == google_id).first()
+
+        # 2. If Google account doesn't exist, look for matching email
+        if user is None:
+            user = db.query(User).filter(User.email == email).first()
+
+            # Existing local account → link Google account
+            if user is not None:
+                user.google_id = google_id
+                db.commit()
+                db.refresh(user)
+
+            # Completely new user → create account
+            else:
+                user = User(
+                    email=email,
+                    full_name=full_name,
+                    google_id=google_id,
+                    hashed_password=None
+                )
+
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+
+        # 3. User now exists → issue YOUR JWTs
+        jwt_access_token = create_access_token(user.email)
+        jwt_refresh_token = create_refresh_token(user.email)
+
+        response.set_cookie(
+            key="refresh_token",
+            value=jwt_refresh_token,
+            httponly=True,
+            secure=False,
+            samesite="lax",
+            path="/auth/refresh"
+        )
+
+        return {
+            "access_token": jwt_access_token,
+            "token_type": "bearer"
+        }
+
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google ID token"
+        )
 
 @app.get("/profile", response_model=UserResponse)
 def get_profile(db: db_dependency, current_user = Depends(get_current_user)):
