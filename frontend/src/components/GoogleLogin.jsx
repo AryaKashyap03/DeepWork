@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
+import { useAuth } from "../context/AuthContext";
 
 function GoogleLogin() {
     const googleButtonRef = useRef(null);
+    const { login } = useAuth();
 
     useEffect(() => {
         if (!window.google) {
@@ -13,13 +15,12 @@ function GoogleLogin() {
             client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
 
             callback: async (response) => {
-                console.log("Google response:", response);
-
                 const result = await fetch("http://localhost:8000/auth/google", {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
                     },
+                    credentials: "include",
                     body: JSON.stringify({
                         credential: response.credential,
                     }),
@@ -27,10 +28,14 @@ function GoogleLogin() {
 
                 const data = await result.json();
 
-                console.log("Backend response:", data);
-                if (result.ok) {
-                    console.log("Google login successful!");
+                if (!result.ok) {
+                    console.error("Google login failed:", data);
+                    return;
                 }
+
+                await login(data.access_token);
+
+                console.log("Google login successful!");
             },
         });
 

@@ -99,20 +99,37 @@ def get_current_user(db: db_dependency, token: str = Depends(oauth2_scheme)):
 
 
 @app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
-def create_user(db: db_dependency, user: UserModel):
+def create_user(response: Response, db: db_dependency, user: UserModel):
 
     data = db.query(User).filter(User.email == user.email).first()
-    if data is None:
-        data = user.model_dump()
-        password = BcryptContext.hash(data.pop("password"))
 
-        db_user = User(**data, hashed_password = password)
-        db.add(db_user)
-        db.commit()
-        db.refresh(db_user)
-        return{"User created successfully"}
-    else:
+    if data is not None:
         raise HTTPException(status_code=status.HTTP_406_NOT_ACCEPTABLE, detail="This email already exists")
+    
+    data = user.model_dump()
+    password = BcryptContext.hash(data.pop("password"))
+
+    db_user = User(**data, hashed_password = password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    jwt_access_token = create_access_token(db_user.email)
+    jwt_refresh_token = create_refresh_token(db_user.email)
+
+    response.set_cookie(
+        key="refresh_token",
+        value=jwt_refresh_token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        path="/auth/refresh"
+    )
+
+    return{
+        "access_token" : jwt_access_token,
+        "token_type" : "bearer"
+    }
 
 
 @app.post("/auth/login")
@@ -235,6 +252,15 @@ def google_login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Google ID token"
         )
+
+@app.post("/auth/logout")
+def logout_user(response: Response):
+    response.delete_cookie(
+        key="refresh_token",
+        path="/auth/refresh"
+    )
+
+    return {"message": "Logged out successfully"}
 
 @app.get("/profile", response_model=UserResponse)
 def get_profile(db: db_dependency, current_user = Depends(get_current_user)):
