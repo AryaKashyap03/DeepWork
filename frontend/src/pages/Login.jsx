@@ -43,20 +43,24 @@ const Login = () => {
 
     return (
     <>
-    <div className="min-h-screen flex flex-col justify-center items-center gap-10 bg-cyan-100">
-        <h1 className="text-6xl font-bold font-sans">Login</h1>
-        <form className="flex flex-col gap-4 border border-black p-6 w-fit mx-auto" onSubmit={check_info}>
+    <div className="min-h-screen flex flex-col justify-center items-center gap-10 bg-slate-100">
+        <h1 className="text-4xl sm:text-5xl font-bold font-sans tracking-tight">Login to your account</h1>
+        <form className="bg-white flex flex-col gap-4 border border-slate-600 rounded-xl shadow-lg p-6 w-fit mx-auto" onSubmit={check_info}>
             <div className="flex flex-col gap-1">
-                <label htmlFor="email">Email</label>
-                <input type="email" id="email" name="email" 
-                className="border border-black px-2 py-1"
+                <label htmlFor="email" className="text-sm font-medium">Email</label>
+                <input type="email" id="email" name="email" required 
+                className="border border-slate-400 rounded-lg px-3 py-2
+                focus:outline-none focus:ring-2 focus:ring-blue-500
+                focus:border-blue-500 transition"
                 value = {email}
                 onChange={(e) => setEmail(e.target.value)}/>
             </div>
             <div className="flex flex-col gap-1">
-                <label htmlFor="password">Password</label>
-                <input type="password" id="password" name="email" 
-                className="border border-black px-2 py-1"
+                <label htmlFor="password" className="text-sm font-medium">Password</label>
+                <input type="password" id="password" name="email" required
+                className="border border-slate-400 rounded-lg px-3 py-2
+                focus:outline-none focus:ring-2 focus:ring-blue-500
+                focus:border-blue-500 transition"
                 value = {password}
                 onChange={(e) => password_change(e)}/>
             </div>
