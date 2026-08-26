@@ -4,23 +4,24 @@ import enum
 from database import Base
 
 
-class TaskType(enum.Enum):
+class TaskType(str,enum.Enum):
     NORMAL = "NORMAL"
     HIGHSTAKES = "HIGH_STAKES"
 
-class TaskStatus(enum.Enum):
+class TaskStatus(str,enum.Enum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
-class CommitmentStatus(enum.Enum):
+class CommitmentStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
     ACTIVE = "ACTIVE"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
-class PaymentStatus(enum.Enum):
+class PaymentStatus(str, enum.Enum):
     CREATED = "CREATED"
     AUTHORIZED = "AUTHORIZED"
     PROCESSING = "PROCESSING"
@@ -28,7 +29,7 @@ class PaymentStatus(enum.Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
-class AuditActor(enum.Enum):
+class AuditActor(str, enum.Enum):
     USER = "USER"
     SYSTEM = "SYSTEM"
     AGENT = "AGENT"
@@ -55,9 +56,9 @@ class Task(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    task_type = Column(String, Enum(TaskType),nullable=False, default=TaskType.NORMAL)
+    task_type = Column(Enum(TaskType),nullable=False, default=TaskType.NORMAL)
     deadline = Column(DateTime(timezone=True), nullable=False)
-    status = Column(String, Enum(TaskStatus) ,nullable=False, default=TaskStatus.PENDING)
+    status = Column(Enum(TaskStatus) ,nullable=False, default=TaskStatus.PENDING)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
     user = relationship("User", back_populates="tasks")
@@ -74,8 +75,8 @@ class Recipient(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
-    email = Column(String(255), nullable=True)
-    phone = Column(String(32), nullable=True)
+    email = Column(String(255), nullable=False)
+    phone = Column(String(32), nullable=False)
     razorpay_reference = Column(String(255), nullable=True)
  
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -97,14 +98,14 @@ class HighStakesCommitment(Base):
     stake_amount = Column(Numeric(12,2), CheckConstraint('stake_amount >= 50.00 and stake_amount <= 1000.00'), nullable=False)
     currency = Column(String(3), nullable=False, server_default="INR")
     recipient_id = Column(Integer, ForeignKey("recipients.id", ondelete="RESTRICT"), nullable=False, index=True)
-    status = Column(String, Enum(CommitmentStatus), nullable=False, default=CommitmentStatus.ACTIVE)
+    status = Column(Enum(CommitmentStatus), nullable=False, default=CommitmentStatus.DRAFT)
     locked_at = Column(DateTime(timezone=True), nullable=True)
     evaluated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     task = relationship("Task", back_populates="high_stakes_commitment")
     user = relationship("User", back_populates="high_stakes_commitments")
     recipient = relationship("Recipient", back_populates="commitments")
-    payments = relationship("Payment", back_populates="commitment")
+    payment = relationship("Payment", back_populates="commitment", uselist=False)
     audit_logs = relationship("AuditLog", back_populates="commitment")
 
 class Payment(Base):
@@ -116,10 +117,11 @@ class Payment(Base):
         ForeignKey("high_stakes_commitments.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
+        unique=True
     )
     amount = Column(Numeric(12,2), CheckConstraint('amount >= 50.00 and amount <= 1000.00'), nullable=False)
     currency = Column(String(3), nullable=False, server_default="INR")
-    status = Column(String, Enum(PaymentStatus), nullable=False, default=PaymentStatus.CREATED)
+    status = Column(Enum(PaymentStatus), nullable=False, default=PaymentStatus.CREATED)
     razorpay_payment_id = Column(String(255), nullable=True, unique=True, index=True)
     razorpay_order_id = Column(String(255), nullable=True, index=True)
     razorpay_payout_id = Column(String(255), nullable=True, unique=True, index=True)
@@ -127,7 +129,7 @@ class Payment(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
  
-    commitment = relationship("HighStakesCommitment", back_populates="payments")
+    commitment = relationship("HighStakesCommitment", back_populates="payment")
 
 class AuditLog(Base):
     __tablename__ = "auditlogs"
@@ -141,7 +143,7 @@ class AuditLog(Base):
         index=True,
     )
     event_type = Column(String(100), nullable=False, index=True)
-    actor = Column(String, Enum(AuditActor), nullable=False)
+    actor = Column(Enum(AuditActor), nullable=False)
     event_metadata = Column("metadata", JSON, nullable=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
  
