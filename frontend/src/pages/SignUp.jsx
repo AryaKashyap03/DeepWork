@@ -56,8 +56,8 @@ const SignUp = () => {
     setApiError("");
   }
   return (
-    <div className="min-h-screen flex flex-col justify-center items-center gap-6 bg-slate-100">
-        <h1 className="text-4xl sm:text-5xl font-bold font-sans tracking-tight">Create an account</h1>
+    <div className="min-h-screen flex flex-col justify-center items-center gap-6 ">
+        <h1 className="text-4xl sm:text-5xl font-bold font-sans tracking-tight text-white">Create an account</h1>
         <form
         onSubmit={check_info}
         className="bg-white flex flex-col gap-4 border border-black rounded-xl shadow-lg p-6 w-fit mx-auto"
@@ -148,7 +148,7 @@ const SignUp = () => {
 
             <GoogleLogin />
         </form>
-        <p>
+        <p className="text-white">
             Already have an account?{" "}
             <Link to="/login" className="text-blue-600 underline">
                 Login

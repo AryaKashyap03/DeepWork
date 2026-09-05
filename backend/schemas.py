@@ -32,13 +32,15 @@ class RecipientModel(BaseModel):
     name : str
     email : EmailStr
     phone : str = Field(min_length=10, max_length=15)
-    razorpay_reference : str
+    razorpay_contact_id : str
+    razorpay_fund_account_id : str
 
 class UpdateRecipientModel(BaseModel):
     name : str
     email : EmailStr
     phone : str = Field(min_length=10, max_length=15)
-    razorpay_reference : str
+    razorpay_contact_id : str
+    razorpay_fund_account_id : str
 
 class HighStakesResponse(BaseModel):
     id: int
@@ -53,3 +55,8 @@ class HighStakesResponse(BaseModel):
     recipient_id: int
 
     model_config = ConfigDict(from_attributes=True)
+
+class PaymentVerificationModel(BaseModel):
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: str

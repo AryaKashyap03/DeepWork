@@ -26,6 +26,8 @@ class PaymentStatus(str, enum.Enum):
     AUTHORIZED = "AUTHORIZED"
     PROCESSING = "PROCESSING"
     SUCCESS = "SUCCESS"
+    REFUNDED = "REFUNDED"
+    SENT_TO_RECIPIENT = "SENT_TO_RECIPIENT"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
@@ -60,7 +62,7 @@ class Task(Base):
     deadline = Column(DateTime(timezone=True), nullable=False)
     status = Column(Enum(TaskStatus) ,nullable=False, default=TaskStatus.PENDING)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    completed_at = Column(DateTime(timezone=True), nullable=True)
+    evaluated_at = Column(DateTime(timezone=True), nullable=True)
     user = relationship("User", back_populates="tasks")
     high_stakes_commitment = relationship(
         "HighStakesCommitment",
@@ -77,8 +79,9 @@ class Recipient(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False)
     phone = Column(String(32), nullable=False)
-    razorpay_reference = Column(String(255), nullable=True)
- 
+    razorpay_contact_id = Column(String(255), nullable=True)
+    razorpay_fund_account_id = Column(String(255), nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
  
     user = relationship("User", back_populates="recipients")
@@ -125,7 +128,7 @@ class Payment(Base):
     razorpay_payment_id = Column(String(255), nullable=True, unique=True, index=True)
     razorpay_order_id = Column(String(255), nullable=True, index=True)
     razorpay_payout_id = Column(String(255), nullable=True, unique=True, index=True)
- 
+    razorpay_refund_id = Column(String(255), nullable=True, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
  

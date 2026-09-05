@@ -1,10 +1,12 @@
 from typing import Annotated, Literal
+import uuid
 from fastapi import Depends, FastAPI, HTTPException, Response, Cookie
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
-from schemas import HighStakesModel, HighStakesResponse, RecipientModel, TaskModel, TaskUpdate, UpdateRecipientModel, UserResponse
+from payout_service import mock_payout_to_recipient
+from schemas import HighStakesModel, HighStakesResponse, PaymentVerificationModel, RecipientModel, TaskModel, TaskUpdate, UpdateRecipientModel, UserResponse
 from database import Base, SessionLocal,engine
-from models import CommitmentStatus, PaymentStatus, TaskStatus, TaskType, User, Task, Recipient, HighStakesCommitment, Payment, AuditLog
+from models import AuditActor, CommitmentStatus, PaymentStatus, TaskStatus, TaskType, User, Task, Recipient, HighStakesCommitment, Payment, AuditLog
 from starlette import status
 from passlib.context import CryptContext
 from jose import jwt, JWTError
@@ -18,10 +20,27 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 
 from razorpay_client import razorpay_client
+from contextlib import asynccontextmanager
+from scheduler import scheduler
+
+from ai_agent import generate_ai_insight
 
 load_dotenv()
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    scheduler.start()
+
+    print("Background scheduler started.")
+
+    yield
+
+    scheduler.shutdown()
+
+    print("Background scheduler stopped.")
+
+app = FastAPI(lifespan=lifespan)
 
 origins = ["http://localhost:5173"]
 
@@ -272,6 +291,7 @@ def get_profile(db: db_dependency, current_user = Depends(get_current_user)):
 @app.post("/tasks", tags=["Normal Task Endpoints"])
 def create_task(db: db_dependency, task: TaskModel, current_user = Depends(get_current_user)):
     user_task = task.model_dump()
+    user_task["status"] = TaskStatus.IN_PROGRESS
     data = Task(**user_task)
     current_user.tasks.append(data)
     db.commit()
@@ -348,10 +368,24 @@ def complete_task(task_id: int, db: db_dependency, current_user = Depends(get_cu
     if data.status == "COMPLETED":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task already completed")
 
-    data.status = "COMPLETED"
+    now = datetime.now(timezone.utc)
+    data.evaluated_at = now
+    deadline = data.deadline
+
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+
+    if now <= deadline:
+        data.status = "COMPLETED"
+        db.commit()
+        db.refresh(data)
+        return data
+
+    data.status = "FAILED"
     db.commit()
     db.refresh(data)
     return data
+    
 
 
 @app.post("/highstakes/recipient", tags=["Recipient Endpoints"])
@@ -363,6 +397,7 @@ def create_recipient(recipient: RecipientModel, db : db_dependency, current_user
     db.add(new_recipient)
     db.commit()
     db.refresh(new_recipient)
+    return new_recipient
 
 
 @app.put("/highstakes/recipient/{recipient_id}", tags=["Recipient Endpoints"])
@@ -421,7 +456,10 @@ def create_highstake_task(task: HighStakesModel, db: db_dependency, current_user
     db.commit()
     db.refresh(normal_task)
     db.refresh(commitment)
-    return commitment
+    return {
+        "task_id": normal_task.id,
+        "commitment_id": commitment.id
+    }
 
 @app.get("/highstakes", response_model=list[HighStakesResponse], tags=["High Stakes Task Endpoints"])
 def get_highstakes(db: db_dependency, current_user=Depends(get_current_user)):
@@ -510,89 +548,239 @@ def confirm_highstake_task(id : int ,db: db_dependency, current_user=Depends(get
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="High stakes task not found")
 
     commitment = task.high_stakes_commitment
-    now = datetime.now(timezone.utc)
 
-    if commitment.status == CommitmentStatus.DRAFT:
-        payment = create_payment(commitment, db)
-        if payment is not None:
-            commitment.status = CommitmentStatus.ACTIVE
-            commitment.locked_at = now
-            task.status = TaskStatus.IN_PROGRESS
-            db.commit()
-            db.refresh(task)
-            db.refresh(commitment)
-            return commitment.payment
-        else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payment already created for this commitment")
+    if commitment.status != CommitmentStatus.DRAFT:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail = "Commitment is no longer in draft state.")
 
-    if commitment.status == CommitmentStatus.ACTIVE:
-        if commitment.payment is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail = "Setup payment first")
-        else:
-            return commitment.payment
+    payment = create_payment(commitment, db)
+
+    if payment is None:
+        payment = commitment.payment
+
+    return {
+        "message": "Payment initialized successfully.",
+        "payment_id": payment.id,
+        "razorpay_order_id": payment.razorpay_order_id,
+        "amount": int(payment.amount * 100),
+        "currency": payment.currency
+    }
+
+@app.post("/highstakes/payments/verify", tags=["High Stakes Task Endpoints"])
+def verify_payment(payment_data: PaymentVerificationModel, db: db_dependency, current_user=Depends(get_current_user)):
+    payment = db.query(Payment).filter(Payment.razorpay_order_id == payment_data.razorpay_order_id).first()
+
+    if payment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+
+    commitment = payment.commitment
+
+    if commitment.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to verify this payment")
+
+    razorpay_client.utility.verify_payment_signature({
+    "razorpay_order_id": payment_data.razorpay_order_id,
+    "razorpay_payment_id": payment_data.razorpay_payment_id,
+    "razorpay_signature": payment_data.razorpay_signature
+    })
+    if payment.status == PaymentStatus.SUCCESS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payment already verified")
+    
+    payment.status = PaymentStatus.SUCCESS
+
+    payment.razorpay_payment_id = payment_data.razorpay_payment_id
+
+    commitment = payment.commitment
+    task = commitment.task
+
+    commitment.status = CommitmentStatus.ACTIVE
+    commitment.locked_at = datetime.now(timezone.utc)
+
+    task.status = TaskStatus.IN_PROGRESS
+    db.commit()
+    return {
+            "message": "Payment verified successfully.",
+            "payment_id": payment.id,
+            "commitment_id": commitment.id,
+            "status": payment.status
+        }
+
+
+def refund_payment(payment, db):
+    if payment.status == PaymentStatus.REFUNDED:
+        return None
+
+    if payment.status != PaymentStatus.SUCCESS:
+        return None
+    
+    refund = razorpay_client.payment.refund(
+        payment.razorpay_payment_id,
+        {
+            "amount": int(payment.amount * 100),
+            "notes": {
+                "reason": "High stakes task completed"
+            }
+        }
+    )
+    payment.razorpay_refund_id = refund["id"]
+    payment.status = PaymentStatus.REFUNDED
+
+    db.commit()
+    db.refresh(payment)
+
+    return payment
+
 
 
 @app.post("/highstakes/{id}/complete", tags=["High Stakes Task Endpoints"])
-def mark_highstake_task_complete(id : int ,db: db_dependency, current_user=Depends(get_current_user)):
+def mark_highstake_task_complete(id: int, db: db_dependency, current_user=Depends(get_current_user)):
 
-    task = db.query(Task).filter(Task.user_id == current_user.id, Task.task_type == TaskType.HIGHSTAKES, Task.id == id).first()
-            
+    task = (
+        db.query(Task)
+        .filter(
+            Task.user_id == current_user.id,
+            Task.task_type == TaskType.HIGHSTAKES,
+            Task.id == id
+        )
+        .first()
+    )
+
     if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="High stakes task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="High stakes task not found"
+        )
 
     commitment = task.high_stakes_commitment
+
+    if commitment is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Commitment not found"
+        )
+
+    payment = commitment.payment
+
+    if payment is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No payment found for this commitment"
+        )
+
     now = datetime.now(timezone.utc)
 
-    if commitment.status == CommitmentStatus.COMPLETED:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail = "Task is already completed")
+    deadline = task.deadline
 
-    if now > task.deadline and commitment.status != CommitmentStatus.COMPLETED and task.status != TaskStatus.COMPLETED:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail = "Time is up. Task status cannot be changed now.")
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
 
-    if now <= task.deadline:
-        commitment.status = CommitmentStatus.COMPLETED
-        task.status = TaskStatus.COMPLETED
-        commitment.evaluated_at = now
+    task.evaluated_at = now
+    commitment.evaluated_at = now
 
-        db.commit()
-        db.refresh(task)
-        db.refresh(commitment)
-        return {"message" : "Task completed successfully before time. Payment aborted."}
+    if commitment.status != CommitmentStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Commitment is not active."
+        )
 
+    # ==========================================
+    # FAILURE CASE
+    # ==========================================
 
-@app.post("/highstakes/{id}/evaluate", tags=["High Stakes Task Endpoints"])
-def evaluate_highstake_task(id : int ,db: db_dependency, current_user=Depends(get_current_user)):
-    task = db.query(Task).filter(Task.user_id == current_user.id, Task.task_type == TaskType.HIGHSTAKES, Task.id == id).first()
-                
-    if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="High stakes task not found")
+    if now > deadline:
 
-    commitment = task.high_stakes_commitment
-    now = datetime.now(timezone.utc)
-
-    if commitment.status == CommitmentStatus.COMPLETED:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail = "Task is already completed")
-
-    if now > task.deadline and task.status != TaskStatus.COMPLETED and commitment.status != CommitmentStatus.COMPLETED:
         commitment.status = CommitmentStatus.FAILED
         task.status = TaskStatus.FAILED
-        commitment.evaluated_at = now
+
+        payout = mock_payout_to_recipient(payment)
 
         db.commit()
 
-        # Financial consequence will eventually happen here
+        db.refresh(task)
+        db.refresh(commitment)
+        db.refresh(payout)
 
         return {
-            "message": "Task failed. Deadline passed without completion."
+            "message": "Task failed. Stake transferred to recipient.",
+            "task_status": task.status,
+            "commitment_status": commitment.status,
+            "payment_status": payout.status,
+            "payout_id": payout.razorpay_payout_id
         }
 
+    # ==========================================
+    # SUCCESS CASE
+    # ==========================================
+
+    refunded_payment = refund_payment(payment, db)
+
+    if refunded_payment is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Payment either already refunded or "
+                "initial payment was not successful"
+            )
+        )
+
+    commitment.status = CommitmentStatus.COMPLETED
+    task.status = TaskStatus.COMPLETED
+
+    db.commit()
+
+    db.refresh(task)
+    db.refresh(commitment)
+    db.refresh(refunded_payment)
+
+    return {
+        "message": "Task completed successfully. Payment refunded.",
+        "task_status": task.status,
+        "commitment_status": commitment.status,
+        "payment_status": refunded_payment.status,
+        "refund_id": refunded_payment.razorpay_refund_id
+    }
+
+
 @app.get("/highstakes/{id}/payment", tags=["Payment endpoint"])
-def get_payment_info(id: int, current_user = Depends(get_current_user)):
-    return current_user.high_stakes_commitments.payment
+def get_payment_info(id: int, db: db_dependency ,current_user = Depends(get_current_user)):
+    commitment = db.query(HighStakesCommitment).filter(HighStakesCommitment.id == id, HighStakesCommitment.user_id == current_user.id).first()
+
+    if commitment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="High stake task not found")
+
+    payment = commitment.payment
+    if payment is None:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="No payment associated with this commitment yet")
+    
+    return payment
     
 
+# ============================================================
+# AI INSIGHT
+# ============================================================
+
+class AIInsightRequest(BaseModel):
+    period: Literal[
+        "THIS_WEEK",
+        "LAST_WEEK",
+        "TWO_WEEKS_AGO",
+        "THIS_MONTH",
+        "ALL_TIME"
+    ] = "THIS_WEEK"
 
 
+@app.post("/ai/insight", tags=["AI"])
+def get_ai_insight(
+    request: AIInsightRequest,
+    db: db_dependency,
+    current_user=Depends(get_current_user)
+):
+    tasks = (
+        db.query(Task)
+        .filter(Task.user_id == current_user.id)
+        .all()
+    )
 
-    
-
+    return generate_ai_insight(
+        tasks,
+        request.period
+    )

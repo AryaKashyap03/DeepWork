@@ -43,8 +43,8 @@ const Login = () => {
 
     return (
     <>
-    <div className="min-h-screen flex flex-col justify-center items-center gap-10 bg-slate-100">
-        <h1 className="text-4xl sm:text-5xl font-bold font-sans tracking-tight">Login to your account</h1>
+    <div className="min-h-screen flex flex-col justify-center items-center gap-10">
+        <h1 className="text-4xl sm:text-5xl font-bold font-sans tracking-tight text-white">Login to your account</h1>
         <form className="bg-white flex flex-col gap-4 border border-slate-600 rounded-xl shadow-lg p-6 w-fit mx-auto" onSubmit={check_info}>
             <div className="flex flex-col gap-1">
                 <label htmlFor="email" className="text-sm font-medium">Email</label>
@@ -75,7 +75,7 @@ const Login = () => {
 
             <GoogleLogin />
         </form>
-        <p>
+        <p className="text-white">
             Don't have an account?{" "}
             <Link to="/signup" className="text-blue-600 underline">
                 Sign up
