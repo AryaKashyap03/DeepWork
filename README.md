@@ -314,8 +314,6 @@ VITE_GOOGLE_CLIENT_ID=your_google_client_id
 VITE_RAZORPAY_KEY_ID=your_razorpay_key_id
 ```
 
-Do not commit `.env` files or API keys to the repository.
-
 ## Database
 
 DeepWork uses PostgreSQL with SQLAlchemy.
@@ -444,10 +442,9 @@ This allows the AI to reason from the user's actual task data instead of relying
 
 - PostgreSQL must be running locally for the backend to connect to the database.
 - Razorpay is currently configured for the test environment.
-- High-stakes payout/refund behavior currently uses mock logic for development.
+- High-stakes payout behavior currently uses mock logic for development.
 - The AI accountability analysis requires a valid Gemini API key.
 - The application is currently intended for local development and experimentation.
-- Environment variables should never be committed to the repository.
 
 ## Future Improvements
 
@@ -466,6 +463,3 @@ Possible future improvements include:
 - Automated testing
 - More granular user and recipient management
 
-## License
-
-This project is currently intended for development and experimentation.
